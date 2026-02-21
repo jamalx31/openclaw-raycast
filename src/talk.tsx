@@ -1,4 +1,4 @@
-import { Action, ActionPanel, Detail, LocalStorage, Toast, environment, getPreferenceValues, showToast } from "@raycast/api";
+import { Action, ActionPanel, Detail, Icon, LocalStorage, Toast, environment, getPreferenceValues, showToast } from "@raycast/api";
 import { ChildProcess, spawn } from "child_process";
 import { hostname } from "os";
 import { join } from "path";
@@ -25,6 +25,13 @@ type ChatMessage = {
   text: string;
 };
 
+type ListenHandle = {
+  result: Promise<string>;
+  stop: () => void;
+};
+
+type Phase = "recording" | "sending" | "idle";
+
 const HISTORY_KEY = "openclaw-talk-history";
 
 async function loadHistory(): Promise<ChatMessage[]> {
@@ -41,12 +48,13 @@ async function saveHistory(messages: ChatMessage[]) {
 function listenLive(
   seconds: number,
   onPartial: (text: string) => void,
-): Promise<string> {
+): ListenHandle {
   const bin = join(environment.assetsPath, "listen");
   console.log("[listen] bin path:", bin);
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn(bin, [String(seconds)]);
+  const proc = spawn(bin, [String(seconds)]);
+
+  const result = new Promise<string>((resolve, reject) => {
     let finalText = "";
     let stderrBuf = "";
 
@@ -79,6 +87,15 @@ function listenLive(
       reject(new Error(err.message));
     });
   });
+
+  const stop = () => {
+    if (!proc.killed) {
+      console.log("[listen] sending SIGTERM");
+      proc.kill("SIGTERM");
+    }
+  };
+
+  return { result, stop };
 }
 
 /** Speak text using the local macOS TTS engine. Returns the child process so it can be killed. */
@@ -101,10 +118,24 @@ function killSpeak(proc: ChildProcess | null) {
   proc.kill("SIGTERM");
 }
 
-function renderMarkdown(history: ChatMessage[], liveTranscript: string) {
-  let md = "# Talk to OpenClaw\n\n";
+function renderMarkdown(history: ChatMessage[], liveTranscript: string, phase: Phase) {
+  let md = "";
 
-  for (const msg of history) {
+  if (phase === "recording") {
+    md += "> Press **Enter** to stop & send, or wait for silence detection.\n\n---\n\n";
+  } else if (phase === "sending") {
+    md += "> Sending…\n\n---\n\n";
+  } else {
+    md += "> Press **Enter** to record again.\n\n---\n\n";
+  }
+
+  if (liveTranscript) {
+    md += `**You:** _${liveTranscript}_\n\n`;
+  }
+
+  // Newest messages first so latest content is visible at the top
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
     if (msg.role === "user") {
       md += `**You:** ${msg.text}\n\n`;
     } else {
@@ -112,61 +143,41 @@ function renderMarkdown(history: ChatMessage[], liveTranscript: string) {
     }
   }
 
-  if (liveTranscript) {
-    md += `**You:** _${liveTranscript}_\n\n`;
-  }
-
-  md += "---\n> Tip: assign a global hotkey to this command in Raycast.";
   return md;
 }
 
 export default function Command() {
   const prefs = getPreferenceValues<Preferences>();
-  const [isLoading, setIsLoading] = useState(false);
+  const [phase, setPhase] = useState<Phase>("idle");
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [liveTranscript, setLiveTranscript] = useState("");
   const startedRef = useRef(false);
-  const runningRef = useRef(false);
+  const listenRef = useRef<ListenHandle | null>(null);
   const speakRef = useRef<ChildProcess | null>(null);
+  const phaseRef = useRef<Phase>("idle");
 
-  // Load history on mount, kill speak on unmount
+  // Keep phaseRef in sync so callbacks can read current phase
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+
+  // Load history on mount, clean up on unmount
   useEffect(() => {
     loadHistory().then((h) => { if (h.length) setHistory(h); });
     return () => {
       killSpeak(speakRef.current);
+      listenRef.current?.stop();
     };
   }, []);
 
-  async function runVoiceFlow() {
-    if (runningRef.current) return;
-    runningRef.current = true;
-
-    // Interrupt any ongoing speech
-    killSpeak(speakRef.current);
-    speakRef.current = null;
-
-    setIsLoading(true);
-    setLiveTranscript("");
-    const toast = await showToast({ style: Toast.Style.Animated, title: "Listening…" });
+  async function sendAndSpeak(text: string) {
+    setPhase("sending");
+    const toast = await showToast({ style: Toast.Style.Animated, title: "Asking OpenClaw…" });
 
     try {
-      const seconds = Math.max(2, Number(prefs.recordSeconds || "30") || 30);
-      console.log("[voice] listening for", seconds, "seconds");
-
-      const text = await listenLive(seconds, (partial) => {
-        setLiveTranscript(partial);
-        toast.title = "Listening…";
-      });
-
-      if (!text) throw new Error("No speech detected");
-      setLiveTranscript("");
       setHistory((h) => {
         const next = [...h, { role: "user" as const, text }];
         saveHistory(next);
         return next;
       });
-
-      toast.title = "Asking OpenClaw…";
 
       const baseUrl = (prefs.apiBaseUrl || "").replace(/\/$/, "");
       if (!baseUrl) throw new Error("API Base URL is not configured — set it in extension preferences");
@@ -214,32 +225,133 @@ export default function Command() {
       toast.title = "Voice flow failed";
       toast.message = error instanceof Error ? error.message : String(error);
     } finally {
-      setIsLoading(false);
-      runningRef.current = false;
+      setPhase("idle");
     }
   }
 
+  async function startRecording() {
+    // Interrupt any ongoing speech
+    killSpeak(speakRef.current);
+    speakRef.current = null;
+
+    setLiveTranscript("");
+    setPhase("recording");
+
+    const toast = await showToast({ style: Toast.Style.Animated, title: "Listening…" });
+    const seconds = Math.max(2, Number(prefs.recordSeconds || "30") || 30);
+    console.log("[voice] listening for", seconds, "seconds");
+
+    const handle = listenLive(seconds, (partial) => {
+      setLiveTranscript(partial);
+      toast.title = "Listening…";
+    });
+    listenRef.current = handle;
+
+    // When listen finishes on its own (silence detection / timeout), auto-send
+    handle.result.then(
+      (text) => {
+        listenRef.current = null;
+        if (!text) {
+          setPhase("idle");
+          toast.style = Toast.Style.Failure;
+          toast.title = "No speech detected";
+          return;
+        }
+        // Only auto-send if we're still in recording phase (not already stopped manually)
+        if (phaseRef.current === "recording") {
+          setLiveTranscript("");
+          toast.hide();
+          sendAndSpeak(text);
+        }
+      },
+      (err) => {
+        listenRef.current = null;
+        // Only show error if we're still in recording phase (cancel triggers a rejection)
+        if (phaseRef.current === "recording") {
+          console.error("[voice] listen error:", err.message);
+          toast.style = Toast.Style.Failure;
+          toast.title = "Listen failed";
+          toast.message = err.message;
+          setPhase("idle");
+        }
+      },
+    );
+  }
+
+  async function stopAndSend() {
+    const handle = listenRef.current;
+    if (!handle) return;
+
+    // Mark sending BEFORE stop so the .then() handler in startRecording skips
+    setPhase("sending");
+
+    // Signal listen to stop — it will emit final:<text> and exit
+    handle.stop();
+
+    try {
+      const text = await handle.result;
+      listenRef.current = null;
+      setLiveTranscript("");
+      if (!text) {
+        await showToast({ style: Toast.Style.Failure, title: "No speech detected" });
+        setPhase("idle");
+        return;
+      }
+      await sendAndSpeak(text);
+    } catch (err) {
+      listenRef.current = null;
+      console.error("[voice] stop error:", err instanceof Error ? err.message : String(err));
+      await showToast({ style: Toast.Style.Failure, title: "No speech detected" });
+      setPhase("idle");
+    }
+  }
+
+  function cancelRecording() {
+    const handle = listenRef.current;
+    if (!handle) return;
+
+    setPhase("idle");
+    setLiveTranscript("");
+    handle.stop();
+    listenRef.current = null;
+    console.log("[voice] recording cancelled");
+    showToast({ style: Toast.Style.Success, title: "Cancelled" });
+  }
+
+  // Auto-start recording on mount
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
-    runVoiceFlow();
+    startRecording();
   }, []);
 
   return (
     <Detail
-      isLoading={isLoading}
-      markdown={renderMarkdown(history, liveTranscript)}
+      isLoading={phase === "sending"}
+      markdown={renderMarkdown(history, liveTranscript, phase)}
       actions={
         <ActionPanel>
-          <Action title="Record and Send" onAction={runVoiceFlow} />
-          <Action.CopyToClipboard
-            title="Copy Last Reply"
-            content={history.filter((m) => m.role === "assistant").pop()?.text || ""}
-          />
-          <Action.CopyToClipboard
-            title="Copy Full History"
-            content={history.map((m) => `${m.role === "user" ? "You" : "OpenClaw"}: ${m.text}`).join("\n\n")}
-          />
+          {phase === "recording" && (
+            <Action title="Stop & Send" icon={Icon.ArrowRight} onAction={stopAndSend} />
+          )}
+          {phase === "recording" && (
+            <Action title="Cancel" icon={Icon.XMarkCircle} onAction={cancelRecording} shortcut={{ modifiers: ["cmd"], key: "." }} />
+          )}
+          {phase === "idle" && (
+            <Action title="Record Again" icon={Icon.Microphone} onAction={startRecording} />
+          )}
+          {phase === "idle" && (
+            <Action.CopyToClipboard
+              title="Copy Last Reply"
+              content={history.filter((m) => m.role === "assistant").pop()?.text || ""}
+            />
+          )}
+          {phase === "idle" && (
+            <Action.CopyToClipboard
+              title="Copy Full History"
+              content={history.map((m) => `${m.role === "user" ? "You" : "OpenClaw"}: ${m.text}`).join("\n\n")}
+            />
+          )}
         </ActionPanel>
       }
     />

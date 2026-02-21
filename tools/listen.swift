@@ -138,6 +138,11 @@ func startRecognition() {
 
 startRecognition()
 
+// -- Signal handlers (allow parent to trigger clean stop) -----------------
+
+signal(SIGTERM) { _ in DispatchQueue.main.async { finish() } }
+signal(SIGINT)  { _ in DispatchQueue.main.async { finish() } }
+
 // -- Hard deadline --------------------------------------------------------
 
 DispatchQueue.main.asyncAfter(deadline: .now() + maxSeconds) {
