@@ -1,0 +1,121 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "openclaw-raycast",
+  "version": "0.1.0",
+  "title": "OpenClaw Raycast",
+  "icon": "icon.png",
+  "author": "jamalx31",
+  "description": "Chat with OpenClaw from Raycast",
+  "scripts": {
+    "build-tools": "swiftc tools/listen.swift -o assets/listen && swiftc tools/speak.swift -o assets/speak && swiftc tools/record.swift -o assets/record && swiftc tools/transcribe.swift -o assets/transcribe",
+    "build": "npm run build-tools && ray build -e dist",
+    "dev": "npm run build-tools && ray develop",
+    "lint": "eslint src --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.96.0",
+    "react": "^19.0.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "@types/react": "^19.0.8",
+    "@types/ws": "^8.5.13",
+    "eslint": "^9.20.1",
+    "typescript": "^5.7.3"
+  },
+  "commands": [
+    {
+      "name": "chat",
+      "title": "Chat with OpenClaw",
+      "subtitle": "OpenClaw",
+      "description": "Send a message to OpenClaw",
+      "mode": "view"
+    },
+    {
+      "name": "talk",
+      "title": "Talk to OpenClaw",
+      "subtitle": "Push-to-talk",
+      "description": "Record, transcribe, and send to OpenClaw",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "transportMode",
+      "type": "dropdown",
+      "required": true,
+      "title": "Transport Mode",
+      "description": "REST (default) or WebSocket streaming",
+      "default": "rest",
+      "data": [
+        { "title": "REST", "value": "rest" },
+        { "title": "WebSocket", "value": "websocket" }
+      ]
+    },
+    {
+      "name": "apiBaseUrl",
+      "type": "textfield",
+      "required": false,
+      "title": "OpenClaw Vox API Base URL",
+      "description": "REST mode. Example: http://localhost:8787"
+    },
+    {
+      "name": "apiToken",
+      "type": "password",
+      "required": false,
+      "title": "API Bearer Token",
+      "description": "Optional bearer token for API auth"
+    },
+    {
+      "name": "sessionId",
+      "type": "textfield",
+      "required": false,
+      "title": "Session ID",
+      "description": "Optional persistent session id"
+    },
+    {
+      "name": "gatewayWsUrl",
+      "type": "textfield",
+      "required": false,
+      "title": "Gateway WebSocket URL",
+      "description": "WebSocket mode. Example: wss://gateway.example.com"
+    },
+    {
+      "name": "gatewayMethod",
+      "type": "textfield",
+      "required": false,
+      "title": "Gateway RPC Method",
+      "description": "WebSocket mode method. Defaults to chat.send"
+    },
+    {
+      "name": "debugLogs",
+      "type": "checkbox",
+      "required": false,
+      "title": "Enable Debug Logs",
+      "description": "Show verbose gateway logs in Raycast console",
+      "default": false
+    },
+    {
+      "name": "queryPath",
+      "type": "textfield",
+      "required": false,
+      "title": "Query Path",
+      "description": "Defaults to /query"
+    },
+    {
+      "name": "channelName",
+      "type": "textfield",
+      "required": false,
+      "title": "Channel Name",
+      "description": "OpenClaw channel name for voice messages. Defaults to openclaw-raycast"
+    },
+    {
+      "name": "recordSeconds",
+      "type": "textfield",
+      "required": false,
+      "title": "Record Seconds",
+      "description": "Defaults to 8"
+    }
+  ]
+}
